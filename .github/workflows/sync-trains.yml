@@ -1,0 +1,28 @@
+name: Sync future trains
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: railbet-timetable
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r scripts/requirements-sync.txt
+      - run: python -m unittest discover -s scripts -p 'test_*.py'
+      - run: python scripts/sync_timetable.py
+        env:
+          TRAIN_ARCHIVE_API_KEY: ${{ secrets.TRAIN_ARCHIVE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RAILBET_DAILY_LIMIT: '20'
+          RAILBET_TRAINS: ${{ vars.RAILBET_TRAINS }}
