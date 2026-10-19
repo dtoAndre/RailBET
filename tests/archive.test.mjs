@@ -1,0 +1,9 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {gzipSync} from 'node:zlib';
+import {archiveURL,parseArchiveCSV,selectArchive,fetchArchive} from '../lib/train-archive.ts';
+const csv='trip_id,stop_name,arrival_delay_min,delay_source\r\n125,"Porto, Campanhã",12,propagated\r\n1250,Oriente,,direct\r\n';
+test('valid calendar dates and fixed provider',()=>{assert.throws(()=>archiveURL('2026-02-30'));assert.throws(()=>archiveURL('../secret'));assert.match(archiveURL('2026-10-10'),/provider=pt-cp/);});
+test('exact trip matching, missing delay and propagated preserved',()=>{const rows=parseArchiveCSV(csv);assert.equal(rows[1].arrival_delay_min,'');const r=selectArchive(rows,'125');assert.equal(r.matchedRows,1);assert.equal(r.rows[0].stop_name,'Porto, Campanhã');assert.equal(r.rows[0].delay_source,'propagated');assert.equal(r.eligibleForAutomaticSettlement,false);assert.throws(()=>parseArchiveCSV('<html>error</html>'));});
+test('server header authentication, compressed response and no token in output',async()=>{let calls=0;const result=await fetchArchive('2026-10-10','125','test-secret',async(url,options)=>{calls++;assert.ok(!url.includes('test-secret'));assert.equal(options.headers['X-Api-Key'],'test-secret');assert.equal(options.redirect,'error');return new Response(gzipSync(csv));});assert.equal(calls,1);assert.equal(result.matchedRows,1);assert.ok(!JSON.stringify(result).includes('test-secret'));});
+test('missing token and HTTP errors fail without inventing results',async()=>{await assert.rejects(fetchArchive('2026-10-10','','',async()=>{throw new Error('must not run');}),/Configura/);for(const code of [401,403,404,429,500])await assert.rejects(fetchArchive('2026-10-10','','secret',async()=>new Response('private upstream error',{status:code})));});

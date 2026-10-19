@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/caiocdcs/comboios-rs",
+  "commit": "842a93b1f2f5b780301792f45992fad13274a8d4",
+  "license": "MIT",
+  "usage": "IP adapter and response schema adapted to TypeScript for Cloudflare Workers."
+}
