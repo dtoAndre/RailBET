@@ -134,7 +134,7 @@ def journeys(tables, now, limit=20, train_filter=None):
                 continue
             candidates.append(dict(train=train, travelDate=departure.astimezone(LISBON).date().isoformat(),
                 service=routes.get(str(trip['route_id']), 'Comboio'), origin=origin, destination=destination,
-                departure=departure.isoformat(), arrival=arrival.isoformat(), tripId=tid, serviceDate=service_date.isoformat()))
+                departure=departure.isoformat(), arrival=arrival.isoformat(), tripId=tid, serviceDate=service_date.isoformat(), destinationStopId=str(stops[-1]['stop_id'])))
         result.extend(candidates)
     # Ambiguous train/date combinations must not silently pick one route.
     grouped = defaultdict(list)

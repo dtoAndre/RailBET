@@ -1,4 +1,5 @@
 import {gunzipSync} from 'node:zlib';
+import {matchesTrain,journeysFromRows} from './archive-journeys.ts';
 
 export function archiveURL(date:string){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T12:00:00Z'))||new Date(date+'T12:00:00Z').toISOString().slice(0,10)!==date)throw new Error('Data inválida.');
@@ -14,7 +15,7 @@ export function parseArchiveCSV(text:string):Record<string,string>[] {
  return lines.map(values=>{if(values.length!==headers.length)throw new Error('Linha CSV incompleta.');return Object.fromEntries(headers.map((h,i)=>[h,values[i]]));});
 }
 export function selectArchive(rows:Record<string,string>[],tripId:string){
- const selected=tripId?rows.filter(r=>r.trip_id===tripId):rows;
+ const selected=rows.filter(r=>matchesTrain(r,tripId));
  return {totalRows:rows.length,matchedRows:selected.length,tripIds:[...new Set(rows.map(r=>r.trip_id))].slice(0,500),rows:selected.slice(0,300),truncated:selected.length>300,eligibleForAutomaticSettlement:false};
 }
 export async function archiveResponse(url:string,token:string,request:typeof fetch){
@@ -42,5 +43,8 @@ export async function fetchArchive(date:string,tripId:string,token=process.env.T
  try{while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>8*1024*1024){await reader.cancel();throw new Error('Ficheiro acima do limite de 8 MB.');}chunks.push(Buffer.from(value));}}finally{reader.releaseLock();}
  const bytes=Buffer.concat(chunks);let text:string;
  try{text=(bytes[0]===0x1f&&bytes[1]===0x8b?gunzipSync(bytes,{maxOutputLength:32*1024*1024}):bytes).toString('utf8');}catch{throw new Error('Arquivo inválido ou demasiado grande.');}
- return {...selectArchive(parseArchiveCSV(text),tripId),date,url,checkedAt:new Date().toISOString()};
+ const rows=parseArchiveCSV(text),journeys=journeysFromRows(rows.filter(r=>matchesTrain(r,tripId)),date);
+ const result={...selectArchive(rows,tripId),journeys,date,url,checkedAt:new Date().toISOString()};
+ if(Buffer.byteLength(JSON.stringify(result))>3*1024*1024)throw new Error('Demasiados dados para esta consulta. Indica o número do comboio.');
+ return result;
 }

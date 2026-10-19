@@ -1,0 +1,5 @@
+import {collectLive} from '../lib/train-live.ts';
+const base=process.env.SUPABASE_URL?.trim().replace(/\/$/,''),key=process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+if(!base||!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(base)||!key)throw new Error('Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+async function rpc(name,payload){const r=await fetch(`${base}/rest/v1/rpc/${name}`,{method:'POST',headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(20000),redirect:'error'});if(!r.ok){const b=await r.json().catch(()=>({}));throw new Error(`Supabase HTTP ${r.status} (${String(b.code??'unknown').replace(/[^a-zA-Z0-9]/g,'')}). Check migration 003 and credentials.`);}return r.json();}
+try{const targets=await rpc('railbet_worker_targets',{});const items=await collectLive(targets);const count=await rpc('railbet_apply_observations',{p_items:items});console.log(`Targets: ${targets.length}; matched: ${items.length}; newer observations saved: ${count}. No automatic payouts.`);}catch(e){console.error(e instanceof Error?e.message:'Sync failed');process.exitCode=1;}

@@ -26,3 +26,5 @@ button.logout{border:0;background:transparent;cursor:pointer;font:inherit}
  .filter-tabs button,.search-box input{font-size:12px}.stat>div>span{font-size:12px}.slip-summary>div,.pool-explanation{font-size:12px}
  .field-label{font-size:11px}.slip-route>span,.slip-footer,.range-labels,.board-note{font-size:10px}
 }
+
+.observation-strip{padding:12px 20px;border-top:1px solid #e3e9dc;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11px;background:#f6f8ef}.observation-strip span{color:#71806b}.observation-strip strong{font-weight:600}
