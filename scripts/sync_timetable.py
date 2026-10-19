@@ -6,6 +6,7 @@ import re
 import sys
 import urllib.request
 import urllib.error
+import urllib.parse
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -17,10 +18,41 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
 
+def archive_redirect(source, location, headers):
+    target = urllib.parse.urljoin(source, location)
+    src, dst = urllib.parse.urlsplit(source), urllib.parse.urlsplit(target)
+    hosts = {'data.train-archive.eu', 'nbg1.your-objectstorage.com'}
+    if (src.scheme != 'https' or src.hostname not in hosts or dst.scheme != 'https'
+            or dst.hostname not in hosts or dst.username or dst.password or dst.port not in (None, 443)):
+        raise ValueError('Blocked redirect: expected HTTPS Train Archive storage')
+    resource = src.path.removeprefix('/gtfs-rt-storage') if src.hostname == 'nbg1.your-objectstorage.com' else src.path
+    expected = '/gtfs-rt-storage'+resource if dst.hostname == 'nbg1.your-objectstorage.com' else resource
+    if dst.path != expected or dst.fragment:
+        raise ValueError('Blocked redirect: unexpected archive resource')
+    # Do not follow a URL that embeds one of our credentials in its query/path.
+    credentials = [v for k,v in headers.items() if k.lower() in ('x-api-key','authorization','apikey')]
+    if any(v and v in urllib.parse.unquote(target) for v in credentials):
+        raise ValueError('Blocked redirect: credential in destination URL')
+    forwarded = dict(headers) if dst.hostname == src.hostname else {
+        k:v for k,v in headers.items() if k.lower() in ('accept','user-agent')}
+    return target, forwarded
+
 def download(url, headers, payload=None):
-    request = urllib.request.Request(url, headers=headers, data=payload)
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=45) as response:
-        data = response.read(32 * 1024 * 1024 + 1)
+    opener = urllib.request.build_opener(NoRedirect())
+    for hop in range(4):
+        request = urllib.request.Request(url, headers=headers, data=payload)
+        try:
+            with opener.open(request, timeout=45) as response:
+                data = response.read(32 * 1024 * 1024 + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get('Location')
+            if payload is not None or exc.code not in (301,302,303,307,308) or not location:
+                raise
+            exc.close()
+            if hop == 3:
+                raise ValueError('Too many archive redirects') from None
+            url, headers = archive_redirect(url, location, headers)
     if len(data) > 32 * 1024 * 1024:
         raise ValueError('Response above 32 MB limit')
     return data
@@ -116,7 +148,7 @@ def journeys(tables, now, limit=20, train_filter=None):
 
 def main():
     token = os.environ['TRAIN_ARCHIVE_API_KEY'].strip()
-    supabase = os.environ['SUPABASE_URL'].rstrip('/')
+    supabase = os.environ['SUPABASE_URL'].strip().rstrip('/')
     key = os.environ['SUPABASE_SERVICE_ROLE_KEY'].strip()
     if not re.fullmatch(r'https://[a-z0-9-]+\.supabase\.co', supabase):
         raise ValueError('SUPABASE_URL must be the HTTPS project URL')

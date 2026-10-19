@@ -17,10 +17,26 @@ export function selectArchive(rows:Record<string,string>[],tripId:string){
  const selected=tripId?rows.filter(r=>r.trip_id===tripId):rows;
  return {totalRows:rows.length,matchedRows:selected.length,tripIds:[...new Set(rows.map(r=>r.trip_id))].slice(0,500),rows:selected.slice(0,300),truncated:selected.length>300,eligibleForAutomaticSettlement:false};
 }
+export async function archiveResponse(url:string,token:string,request:typeof fetch){
+ const signal=AbortSignal.timeout(18000);let headers:Record<string,string>={'X-Api-Key':token,Accept:'application/gzip'};
+ for(let hop=0;hop<4;hop++){
+  let response:Response;
+  try{response=await request(url,{headers,cache:'no-store',redirect:'manual',signal});}catch{throw new Error('Não foi possível contactar o Train Archive.');}
+  if(![301,302,303,307,308].includes(response.status))return response;
+  const location=response.headers.get('location');await response.body?.cancel();
+  if(!location||hop===3)throw new Error('Redirecionamento do arquivo em falta ou repetido.');
+  const src=new URL(url),dst=new URL(location,url),allowed=['data.train-archive.eu','nbg1.your-objectstorage.com'];
+  const resource=src.hostname==='nbg1.your-objectstorage.com'?src.pathname.replace(/^\/gtfs-rt-storage/,''):src.pathname;
+  const expected=dst.hostname==='nbg1.your-objectstorage.com'?'/gtfs-rt-storage'+resource:resource;
+  if(dst.protocol!=='https:'||!allowed.includes(dst.hostname)||dst.username||dst.password||dst.port||dst.hash||dst.pathname!==expected||decodeURIComponent(dst.href).includes(token))throw new Error('O arquivo redirecionou para um destino não autorizado.');
+  if(dst.origin!==src.origin)headers={Accept:'application/gzip'};
+  url=dst.href;
+ }
+ throw new Error('Demasiados redirecionamentos.');
+}
 export async function fetchArchive(date:string,tripId:string,token=process.env.TRAIN_ARCHIVE_API_KEY,request:typeof fetch=fetch){
  const url=archiveURL(date);if(!token?.trim())throw new Error('Configura TRAIN_ARCHIVE_API_KEY no servidor.');
- let response:Response;
- try{response=await request(url,{headers:{'X-Api-Key':token.trim(),Accept:'application/gzip'},cache:'no-store',redirect:'error',signal:AbortSignal.timeout(18000)});}catch{throw new Error('Não foi possível contactar o Train Archive.');}
+ const response=await archiveResponse(url,token.trim(),request);
  if(!response.ok){await response.body?.cancel();throw new Error(response.status===404?'O ficheiro diário ainda não existe para esta data. Experimenta um dia anterior.':response.status===401||response.status===403?'O Train Archive recusou o acesso. Verifica o token.':response.status===429?'Limite de consultas atingido. Tenta mais tarde.':`Train Archive: HTTP ${response.status}.`);}
  const reader=response.body?.getReader();if(!reader)throw new Error('Resposta vazia.');const chunks:Buffer[]=[];let size=0;
  try{while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>8*1024*1024){await reader.cancel();throw new Error('Ficheiro acima do limite de 8 MB.');}chunks.push(Buffer.from(value));}}finally{reader.releaseLock();}
