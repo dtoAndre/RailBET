@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {gzipSync} from 'node:zlib';
 import {verifyFinalResult, collectFinalResults} from '../lib/train-results.ts';
+import {createWorkerRPC,applyResultBatches} from '../lib/result-worker.ts';
 
 const now = Date.parse('2026-10-20T21:00:00Z'), date = '2026-10-18';
 const target = {id:crypto.randomUUID(), archive_trip_id:'121_20251214', archive_service_date:date,
@@ -63,6 +64,33 @@ test('worker reads a daily file once per date, handles not-yet-ready and reports
   const missing=await collectFinalResults([target],'test',async()=>new Response('',{status:404}),now);
   assert.equal(missing.results.length,0);assert.equal(missing.checks[0].reason,'daily_file_not_ready');
   await assert.rejects(collectFinalResults([target],'test',async()=>new Response('',{status:429}),now),/429/);
+});
+
+test('payout writes are split into batches of 20 without losing or duplicating a market',async()=>{
+  const checks=Array.from({length:45},()=>({marketId:crypto.randomUUID(),reason:'verified_daily_destination'}));
+  const results=checks.filter((_,i)=>i%2===0).map(c=>({...verify().result,marketId:c.marketId}));
+  const calls=[];
+  const totals=await applyResultBatches(results,checks,async(name,payload)=>{
+    assert.equal(name,'railbet_apply_results');calls.push(payload);
+    assert.ok(payload.p_items.every(i=>payload.p_checks.some(c=>c.marketId===i.marketId)));
+    return {checked:payload.p_checks.length,settled:payload.p_items.length,voided:0,alreadyFinal:0};
+  },()=>{});
+  assert.deepEqual(calls.map(c=>c.p_checks.length),[20,20,5]);
+  assert.equal(new Set(calls.flatMap(c=>c.p_checks.map(i=>i.marketId))).size,45);
+  assert.equal(totals.checked,45);assert.equal(totals.settled,23);
+  await assert.rejects(applyResultBatches(results,[...checks,checks[0]],async()=>{},()=>{}),/duplicate/);
+});
+
+test('timeouts and database failures identify the exact stage without exposing keys',async()=>{
+  const messages=[];
+  const rpc=createWorkerRPC('https://example.supabase.co','secret-never-log',async()=>{
+    throw new DOMException('The operation was aborted due to timeout','TimeoutError');
+  },m=>messages.push(m));
+  await assert.rejects(rpc('railbet_result_targets',{}),/Supabase railbet_result_targets failed.*request timeout/);
+  assert.ok(messages.every(m=>!m.includes('secret-never-log')));
+  const failed=createWorkerRPC('https://example.supabase.co','test',async()=>Response.json({code:'57014'},{status:500}),()=>{});
+  await assert.rejects(failed('railbet_apply_results',{}),/railbet_apply_results.*database statement timeout/);
+  await assert.rejects(collectFinalResults([target],'test',async()=>{throw new DOMException('Aborted','AbortError');},now),/Train Archive daily 2026-10-18 failed/);
 });
 
 test('database permissions, exactly-once payouts, refunds and audit evidence', async t => {

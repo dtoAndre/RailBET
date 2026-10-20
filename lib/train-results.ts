@@ -74,7 +74,11 @@ export function verifyFinalResult(rows: Row[], target: ResultTarget,
 }
 
 async function dailyRows(date: string, token: string, request: typeof fetch) {
-  const source = archiveURL(date), response = await archiveResponse(source, token, request);
+  // One shared deadline covers redirects AND the body. The generic live-data
+  // helper has an 18-second deadline intended for smaller live-data downloads.
+  const deadline=AbortSignal.timeout(60000);
+  const dailyRequest:typeof fetch=(url,init)=>request(url,{...init,signal:deadline});
+  const source = archiveURL(date), response = await archiveResponse(source, token, dailyRequest);
   if (response.status === 404) { await response.body?.cancel(); return null; }
   if (!response.ok) { await response.body?.cancel(); throw new Error(`Train Archive daily HTTP ${response.status} (${date})`); }
   const reader = response.body?.getReader(); if (!reader) throw new Error('Empty daily archive');
@@ -89,14 +93,19 @@ async function dailyRows(date: string, token: string, request: typeof fetch) {
 }
 
 export async function collectFinalResults(targets: ResultTarget[], token = process.env.TRAIN_ARCHIVE_API_KEY,
-  request: typeof fetch = fetch, now = Date.now()) {
+  request: typeof fetch = fetch, now = Date.now(), log:(message:string)=>void=()=>{}) {
   if (!token?.trim()) throw new Error('Configure TRAIN_ARCHIVE_API_KEY');
   const results: FinalResult[] = [], checks: {marketId:string; reason:string}[] = [];
   const dates = [...new Set(targets.map(t => t.archive_service_date))].sort();
   if (dates.length > 8) throw new Error('Too many daily files in one batch (maximum 8)');
   for (const date of dates) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date >= localDay(now)) throw new Error('Worker selected a service day that has not closed');
-    const file = await dailyRows(date, token.trim(), request);
+    const started=Date.now();
+    log(`[start] Train Archive daily ${date}`);
+    let file:Awaited<ReturnType<typeof dailyRows>>;
+    try {file=await dailyRows(date, token.trim(), request);}
+    catch(error){throw new Error(`Train Archive daily ${date} failed after ${Math.round((Date.now()-started)/1000)}s: ${error instanceof Error?error.message:'download or parsing error'}`);}
+    log(`[done] Train Archive daily ${date}: ${file?`${file.rows.length} rows`:'not ready (404)'} (${Math.round((Date.now()-started)/1000)}s)`);
     for (const target of targets.filter(t => t.archive_service_date === date)) {
       const decision = file ? verifyFinalResult(file.rows, target, file, now) : {result:null, reason:'daily_file_not_ready'};
       checks.push({marketId:target.id, reason:decision.reason});
