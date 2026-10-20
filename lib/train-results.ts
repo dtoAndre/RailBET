@@ -51,8 +51,12 @@ export function verifyFinalResult(rows: Row[], target: ResultTarget,
   const first = trip[sequences.indexOf(Math.min(...sequences))];
   const scheduledDeparture = instant(first.scheduled_departure, date);
   if (!scheduledDeparture || Date.parse(scheduledDeparture) !== Date.parse(target.departure)) return reject('scheduled_departure_mismatch');
+  // The caller passes the parsed daily file, which also contains every row.
+  // Copy only provenance fields: spreading metadata sends the entire archive
+  // with each result despite its narrower TypeScript type.
   const base = {marketId: target.id, tripId: target.archive_trip_id, serviceDate: date,
-    destinationStopId: target.archive_destination_stop_id, scheduledArrival, ...metadata, row};
+    destinationStopId: target.archive_destination_stop_id, scheduledArrival,
+    source: metadata.source, sha256: metadata.sha256, retrievedAt: metadata.retrievedAt, row};
   if (trip.every(r => isCancelled(r.trip_status))) return {result: {...base, outcome:'cancelled',
     reportedDelayMinutes:null, delayMinutes:null, reportedArrival:null, observedAt:null}, reason:'cancelled_in_closed_daily_file'};
   if (trip.some(r => r.trip_status !== 'scheduled')) return reject('unsupported_or_conflicting_trip_status');

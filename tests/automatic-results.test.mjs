@@ -81,6 +81,48 @@ test('each market is saved in its own transaction without losing or duplicating 
   await assert.rejects(applyResultBatches(results,[...checks,checks[0]],async()=>{},()=>{}),/duplicate/);
 });
 
+test('result evidence excludes extra file metadata for arrivals and cancellations',()=>{
+  // TypeScript's metadata type does not remove extra properties at runtime.
+  const file={...metadata,rows,internalMarker:'must-not-be-sent'};
+  for(const trip of [rows,rows.map(r=>({...r,trip_status:'cancelled'}))]){
+    const {result}=verify(trip,target,file);
+    assert.ok(result);
+    assert.equal(Object.hasOwn(result,'rows'),false);
+    assert.equal(Object.hasOwn(result,'internalMarker'),false);
+    assert.equal(result.source,metadata.source);
+    assert.equal(result.sha256,metadata.sha256);
+    assert.equal(result.retrievedAt,metadata.retrievedAt);
+    assert.deepEqual(result.row,trip[1]);
+  }
+});
+
+test('a 16216-row daily archive produces a small per-market HTTP request',async t=>{
+  const unrelated=Array.from({length:16214},(_,i)=>row(1,'other-stop',{
+    trip_id:`unrelated-${i}`,stop_name:'UNRELATED_ARCHIVE_ROW',
+  }));
+  const daily=[...rows,...unrelated],headers=Object.keys(rows[0]);
+  const csv=headers.join(',')+'\n'+daily.map(r=>headers.map(h=>r[h]).join(',')).join('\n');
+  const {results,checks}=await collectFinalResults([target],'test',
+    async()=>new Response(gzipSync(csv)),now);
+  assert.equal(results.length,1);
+  let calls=0;
+  const rpc=createWorkerRPC('https://example.supabase.co','test',async(_url,options)=>{
+    calls++;
+    const body=String(options.body),bytes=Buffer.byteLength(body);
+    assert.ok(bytes<4096,`One result sent ${bytes} bytes; the daily archive must stay local`);
+    t.diagnostic(`16216 archive rows; ${bytes} bytes in the per-market request`);
+    assert.equal(body.includes('UNRELATED_ARCHIVE_ROW'),false);
+    const payload=JSON.parse(body);
+    assert.equal(payload.p_items.length,1);
+    assert.equal(Object.hasOwn(payload.p_items[0],'rows'),false);
+    assert.deepEqual(payload.p_items[0].row,rows[1]);
+    assert.deepEqual(payload.p_checks,checks);
+    return Response.json({checked:1,settled:1,voided:0,alreadyFinal:0});
+  },()=>{});
+  const summary=await applyResultBatches(results,checks,rpc,()=>{});
+  assert.equal(calls,1);assert.equal(summary.settled,1);
+});
+
 test('timeouts and database failures identify the exact stage without exposing keys',async()=>{
   const messages=[];
   const rpc=createWorkerRPC('https://example.supabase.co','secret-never-log',async()=>{
