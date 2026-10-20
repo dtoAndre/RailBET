@@ -66,7 +66,7 @@ test('worker reads a daily file once per date, handles not-yet-ready and reports
   await assert.rejects(collectFinalResults([target],'test',async()=>new Response('',{status:429}),now),/429/);
 });
 
-test('payout writes are split into batches of 20 without losing or duplicating a market',async()=>{
+test('each market is saved in its own transaction without losing or duplicating a market',async()=>{
   const checks=Array.from({length:45},()=>({marketId:crypto.randomUUID(),reason:'verified_daily_destination'}));
   const results=checks.filter((_,i)=>i%2===0).map(c=>({...verify().result,marketId:c.marketId}));
   const calls=[];
@@ -75,7 +75,7 @@ test('payout writes are split into batches of 20 without losing or duplicating a
     assert.ok(payload.p_items.every(i=>payload.p_checks.some(c=>c.marketId===i.marketId)));
     return {checked:payload.p_checks.length,settled:payload.p_items.length,voided:0,alreadyFinal:0};
   },()=>{});
-  assert.deepEqual(calls.map(c=>c.p_checks.length),[20,20,5]);
+  assert.equal(calls.length,45);assert.ok(calls.every(c=>c.p_checks.length===1));
   assert.equal(new Set(calls.flatMap(c=>c.p_checks.map(i=>i.marketId))).size,45);
   assert.equal(totals.checked,45);assert.equal(totals.settled,23);
   await assert.rejects(applyResultBatches(results,[...checks,checks[0]],async()=>{},()=>{}),/duplicate/);
@@ -104,6 +104,8 @@ test('database permissions, exactly-once payouts, refunds and audit evidence', a
       await db.exec(await readFile(path,'utf8'));
     }
     await db.exec(await readFile(new URL('../supabase/migrations/004_automatic_results.sql',import.meta.url),'utf8'));
+    const lockMigration=await readFile(new URL('../supabase/migrations/005_result_lock_timeouts.sql',import.meta.url),'utf8');
+    await db.exec(lockMigration);await db.exec(lockMigration);
     const players=[crypto.randomUUID(),crypto.randomUUID(),crypto.randomUUID()];
     for (const [i,id] of players.entries()) {await db.query('insert into auth.users values($1)',[id]);await db.query('insert into public.players(id,nickname) values($1,$2)',[id,'Player '+i]);}
     await db.query('insert into public.admins values($1)',[players[0]]);
@@ -119,6 +121,9 @@ test('database permissions, exactly-once payouts, refunds and audit evidence', a
       await assert.rejects(apply([]),/permission denied/);
       await assert.rejects(db.query('select public.railbet_result_targets()'),/permission denied/);
       await assert.rejects(db.query('select public._railbet_finalize_archive($1,13,$2)',[target.id,'{}']),/permission denied/);
+      await db.exec('reset role');
+      await db.exec('set role service_role');
+      await assert.rejects(db.query('select public._railbet_apply_results_validated($1,$2)',['[]','[]']),/permission denied/);
       await db.exec('reset role');
     });
     await t.test('a verified result pays 90%, records evidence and is idempotent',async()=>{
@@ -171,6 +176,19 @@ test('database permissions, exactly-once payouts, refunds and audit evidence', a
       assert.deepEqual(paid.map(b=>Number(b.payout)),[92,277,0]);
       const m=(await db.query('select house_cut from public.markets where id=$1',[item.marketId])).rows[0];
       assert.equal(paid.reduce((s,b)=>s+Number(b.payout),0)+Number(m.house_cut),410);
+    });
+    await t.test('a lock failure leaves credits untouched and reports a retry instead of failing the job',async()=>{
+      const item=await market();
+      const definition=(await db.query("select pg_get_functiondef('public._railbet_apply_results_validated(jsonb,jsonb)'::regprocedure) as definition")).rows[0].definition;
+      try {
+        await db.exec("create or replace function public._railbet_apply_results_validated(p_items jsonb,p_checks jsonb default '[]') returns jsonb language plpgsql security definer set search_path='' as $$ begin insert into public.settings(key,value) values('lock-test','true'); raise exception using errcode='55P03',message='simulated player lock timeout';end $$;");
+        const summary=(await apply([item],[{marketId:item.marketId,reason:'verified_daily_destination'}])).rows[0].result;
+        assert.equal(summary.busy,1);assert.equal(summary.settled,0);
+        assert.equal((await db.query("select * from public.settings where key='lock-test'")).rows.length,0);
+        assert.equal((await db.query('select actual_delay from public.markets where id=$1',[item.marketId])).rows[0].actual_delay,null);
+        assert.equal((await db.query('select * from public.ledger where market_id=$1',[item.marketId])).rows.length,0);
+      } finally {await db.exec(definition);}
+      assert.equal((await apply([item])).rows[0].result.settled,1);
     });
   } finally {await db.close();}
 });

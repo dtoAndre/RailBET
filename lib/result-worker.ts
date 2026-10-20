@@ -26,20 +26,21 @@ export function createWorkerRPC(base:string,key:string,request:typeof fetch=fetc
   };
 }
 
-// Keep each payout transaction small. Checks and verified items for the same
-// market always stay in one batch; retrying after interruption is idempotent.
+// Each market is its own transaction. One slow or locked market cannot make
+// the other nineteen markets in a batch roll back or wait for its locks.
 export async function applyResultBatches(results:FinalResult[],checks:{marketId:string;reason:string}[],
   rpc:RPC,log:Log=console.log) {
   const checked=new Set(checks.map(c=>c.marketId));
   if(checked.size!==checks.length||new Set(results.map(r=>r.marketId)).size!==results.length||
     results.some(r=>!checked.has(r.marketId)))throw new Error('Invalid or duplicate verification targets');
-  const totals={checked:0,settled:0,voided:0,alreadyFinal:0};
-  for(let offset=0;offset<checks.length;offset+=20){
-    const batch=checks.slice(offset,offset+20),ids=new Set(batch.map(c=>c.marketId));
+  const totals={checked:0,settled:0,voided:0,alreadyFinal:0,busy:0};
+  for(let offset=0;offset<checks.length;offset++){
+    const batch=checks.slice(offset,offset+1),ids=new Set(batch.map(c=>c.marketId));
     const items=results.filter(r=>ids.has(r.marketId));
-    log(`[save] Batch ${offset/20+1}/${Math.ceil(checks.length/20)}: ${batch.length} checks, ${items.length} verified results`);
+    log(`[save] Market ${offset+1}/${checks.length} (${batch[0].marketId}): ${items.length} verified results`);
     const summary=await rpc('railbet_apply_results',{p_items:items,p_checks:batch});
     for(const name of Object.keys(totals) as (keyof typeof totals)[]) totals[name]+=Number(summary[name]??0);
+    if(Number(summary.busy??0)>0)log(`[pending] Market ${batch[0].marketId} is busy; retry on a later run.`);
   }
   return totals;
 }
