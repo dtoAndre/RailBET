@@ -1,8 +1,14 @@
 name: Sync future trains
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/sync_timetable.py'
+      - 'scripts/test_*.py'
+      - '.github/workflows/sync-trains.yml'
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17,47 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -24,5 +30,5 @@ jobs:
           TRAIN_ARCHIVE_API_KEY: ${{ secrets.TRAIN_ARCHIVE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          RAILBET_DAILY_LIMIT: '20'
           RAILBET_TRAINS: ${{ vars.RAILBET_TRAINS }}
+

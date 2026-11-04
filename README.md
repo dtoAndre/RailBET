@@ -6,6 +6,26 @@ Um jogo de palpites sobre atrasos dos comboios portugueses, apenas com créditos
 
 ## Experimentar em dois minutos
 
+### Importação automática de horários
+
+O workflow **Sync future trains** importa apenas Alfa Pendular (`AP`), Intercidades
+(`IC`) e InterRegional (`IR`), identificados pelo `route_short_name` do GTFS da CP.
+Regionais, urbanos e categorias desconhecidas ficam excluídos das novas importações.
+Importa todas as viagens elegíveis com partida hoje ou amanhã em Europe/Lisbon,
+sem o antigo limite das primeiras 20 por dia. Mantém o calendário de circulação,
+a exclusão de identidades ambíguas e o fecho 10 minutos antes da partida.
+
+Os envios são feitos em lotes de 100, compatíveis com as migrações existentes.
+O workflow está agendado aos minutos 17 e 47 de cada hora (a execução efetiva
+depende do GitHub Actions), pode ser iniciado manualmente e também corre quando
+o importador, os seus testes ou o workflow são atualizados em `main`.
+Os logs mostram contagens por data/serviço, intervalo de partidas e resultado de cada lote.
+`RAILBET_TRAINS`, se preenchida, continua a restringir os números dentro destas
+três categorias; `RAILBET_DAILY_LIMIT` deixou de ser utilizada.
+
+Não requer nova migração. Viagens e apostas já existentes são preservadas;
+os resultados continuam a depender de evidência de chegada, não da importação de horários.
+
 Instala Node.js 24, abre esta pasta no terminal e executa:
 
 ```sh
@@ -131,3 +151,4 @@ Referências de configuração:
 - [Supabase Auth no servidor](https://supabase.com/docs/guides/auth/server-side/creating-a-client)
 - [Supabase SMTP](https://supabase.com/docs/guides/auth/auth-smtp)
 - [Limites do cron Vercel](https://vercel.com/docs/cron-jobs/usage-and-pricing)
+

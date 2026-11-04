@@ -7,12 +7,14 @@ import sys
 import urllib.request
 import urllib.error
 import urllib.parse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 BASE = 'https://data.train-archive.eu/'
 LISBON = ZoneInfo('Europe/Lisbon')
+ALLOWED_SERVICES = frozenset({'AP', 'IC', 'IR'})
+SYNC_BATCH_SIZE = 100  # The database accepts at most 300 journeys per call.
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -93,11 +95,13 @@ def instant(service_date, clock):
     noon = datetime.combine(service_date, datetime.min.time()).replace(hour=12, tzinfo=LISBON)
     return noon.astimezone(timezone.utc) + timedelta(seconds=h*3600+m*60+s-43200)
 
-def journeys(tables, now, limit=20, train_filter=None):
+def journeys(tables, now, train_filter=None):
     if not tables.get('calendar') and not tables.get('calendar_dates'):
         raise ValueError('No service calendar: cannot safely create markets')
     stations = {str(r['stop_id']): str(r['stop_name']) for r in tables['stops']}
-    routes = {str(r['route_id']): str(r.get('route_short_name') or r.get('route_long_name') or 'Comboio') for r in tables['routes']}
+    # CP publishes AP, IC and IR in route_short_name. Do not guess the
+    # category from train numbers, route IDs or a generic GTFS rail type.
+    routes = {str(r['route_id']): str(r.get('route_short_name') or '').strip().upper() for r in tables['routes']}
     times = defaultdict(list)
     for r in tables['stop_times']:
         times[str(r['trip_id'])].append(r)
@@ -109,6 +113,9 @@ def journeys(tables, now, limit=20, train_filter=None):
         candidates = []
         for trip in tables['trips']:
             tid = str(trip['trip_id'])
+            service = routes.get(str(trip['route_id']))
+            if service not in ALLOWED_SERVICES:
+                continue
             if str(trip['service_id']) not in active or tid in frequency_trips:
                 continue
             # Never extract digits from an opaque identifier and pretend it is a train number.
@@ -132,8 +139,10 @@ def journeys(tables, now, limit=20, train_filter=None):
                 continue
             if departure <= now+timedelta(minutes=10) or departure > now+timedelta(hours=48) or arrival <= departure:
                 continue
+            if departure.astimezone(LISBON).date() not in (today, today+timedelta(days=1)):
+                continue
             candidates.append(dict(train=train, travelDate=departure.astimezone(LISBON).date().isoformat(),
-                service=routes.get(str(trip['route_id']), 'Comboio'), origin=origin, destination=destination,
+                service=service, origin=origin, destination=destination,
                 departure=departure.isoformat(), arrival=arrival.isoformat(), tripId=tid, serviceDate=service_date.isoformat(), destinationStopId=str(stops[-1]['stop_id'])))
         result.extend(candidates)
     # Ambiguous train/date combinations must not silently pick one route.
@@ -141,10 +150,19 @@ def journeys(tables, now, limit=20, train_filter=None):
     for item in result:
         grouped[(item['train'], item['travelDate'])].append(item)
     unique = [items[0] for items in grouped.values() if len(items) == 1]
-    selected = []
-    for d in sorted({r['travelDate'] for r in unique}):
-        selected.extend(sorted((r for r in unique if r['travelDate'] == d), key=lambda r:r['departure'])[:limit])
-    return selected, skipped
+    return sorted(unique, key=lambda r:(r['departure'], r['train'])), skipped
+
+def sync_journeys(supabase, key, items, version):
+    totals = {'inserted': 0, 'received': 0}
+    for start in range(0, len(items), SYNC_BATCH_SIZE):
+        batch = items[start:start+SYNC_BATCH_SIZE]
+        payload = json.dumps({'p_journeys': batch, 'p_version': version}).encode()
+        result = json.loads(download(supabase+'/rest/v1/rpc/railbet_sync_timetable',
+            {'apikey': key, 'Authorization': 'Bearer '+key, 'Content-Type': 'application/json'}, payload))
+        print(f'Supabase batch {start//SYNC_BATCH_SIZE+1}: {result}')
+        for field in totals:
+            totals[field] += int(result[field])
+    return totals
 
 def main():
     token = os.environ['TRAIN_ARCHIVE_API_KEY'].strip()
@@ -163,19 +181,18 @@ def main():
     for required in ('stops', 'routes', 'trips', 'stop_times'):
         if not tables.get(required):
             raise ValueError('Required timetable table missing: '+required)
-    limit = int(os.environ.get('RAILBET_DAILY_LIMIT', '20'))
-    if not 1 <= limit <= 100:
-        raise ValueError('RAILBET_DAILY_LIMIT must be 1..100')
     train_filter = set(filter(None, (s.strip() for s in os.environ.get('RAILBET_TRAINS', '').split(','))))
-    items, skipped = journeys(tables, datetime.now(timezone.utc), limit, train_filter)
+    items, skipped = journeys(tables, datetime.now(timezone.utc), train_filter=train_filter)
     print(f'Validated future journeys: {len(items)}; skipped unsupported records: {skipped}')
+    for (travel_date, service), count in sorted(Counter((r['travelDate'], r['service']) for r in items).items()):
+        departures = [r['departure'] for r in items if (r['travelDate'], r['service']) == (travel_date, service)]
+        print(f'{travel_date} {service}: {count} eligible journeys; departures {min(departures)} to {max(departures)}')
     if not items:
         print('Trip columns:', sorted(tables['trips'][0]))
+        print('Route categories:', sorted({str(r.get('route_short_name') or '') for r in tables['routes']}))
         raise ValueError('No eligible future journeys; no fabricated schedules were inserted')
-    payload = json.dumps({'p_journeys': items, 'p_version': str(latest.get('version', 'unknown'))}).encode()
-    result = download(supabase+'/rest/v1/rpc/railbet_sync_timetable',
-        {'apikey': key, 'Authorization': 'Bearer '+key, 'Content-Type': 'application/json'}, payload)
-    print('Supabase sync:', result.decode())
+    result = sync_journeys(supabase, key, items, str(latest.get('version', 'unknown')))
+    print('Supabase sync:', json.dumps(result))
 
 if __name__ == '__main__':
     try:
@@ -187,3 +204,4 @@ if __name__ == '__main__':
     except Exception as exc:
         print('Sync failed:', type(exc).__name__, str(exc) if isinstance(exc, (ValueError, KeyError)) else 'Check connection/dependencies', file=sys.stderr)
         sys.exit(1)
+
