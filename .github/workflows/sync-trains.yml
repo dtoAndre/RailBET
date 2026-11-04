@@ -8,11 +8,13 @@ on:
       - 'scripts/test_*.py'
       - '.github/workflows/sync-trains.yml'
   schedule:
-    - cron: '17,47 * * * *'
+    - cron: '17 */6 * * *'
 permissions:
   contents: read
 concurrency:
-  group: railbet-timetable
+  # All three workers share the same Supabase database.
+  group: railbet-database-workers
+  queue: max
   cancel-in-progress: false
 jobs:
   sync:

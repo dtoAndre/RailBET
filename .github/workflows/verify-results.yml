@@ -2,11 +2,13 @@ name: Verify final train results
 on:
   workflow_dispatch:
   schedule:
-    - cron: '41 * * * *'
+    - cron: '47 */6 * * *'
 permissions:
   contents: read
 concurrency:
-  group: railbet-final-results
+  # All three workers share the same Supabase database.
+  group: railbet-database-workers
+  queue: max
   cancel-in-progress: false
 jobs:
   verify:

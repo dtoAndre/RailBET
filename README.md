@@ -16,9 +16,16 @@ sem o antigo limite das primeiras 20 por dia. Mantém o calendário de circulaç
 a exclusão de identidades ambíguas e o fecho 10 minutos antes da partida.
 
 Os envios são feitos em lotes de 100, compatíveis com as migrações existentes.
-O workflow está agendado aos minutos 17 e 47 de cada hora (a execução efetiva
-depende do GitHub Actions), pode ser iniciado manualmente e também corre quando
-o importador, os seus testes ou o workflow são atualizados em `main`.
+Os três workflows correm de seis em seis horas, às 00, 06, 12 e 18 UTC:
+horários ao minuto 17, observações ao minuto 32 e resultados ao minuto 47.
+A execução efetiva depende do GitHub Actions. Todos partilham o grupo de
+concorrência `railbet-database-workers`, com `queue: max` e
+`cancel-in-progress: false`: apenas um executa de cada vez, os restantes aguardam
+(até 100 pendentes), sem interromper uma atualização em curso. Isto também se
+aplica aos arranques manuais. O desfasamento reduz a sobreposição; a ordem efetiva
+não é garantida em caso de atrasos do agendador.
+O importador também corre quando o seu código, testes ou workflow são atualizados
+em `main`. No horário de verão de Portugal continental, as horas locais são UTC+1.
 Os logs mostram contagens por data/serviço, intervalo de partidas e resultado de cada lote.
 `RAILBET_TRAINS`, se preenchida, continua a restringir os números dentro destas
 três categorias; `RAILBET_DAILY_LIMIT` deixou de ser utilizada.

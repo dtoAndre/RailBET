@@ -2,11 +2,13 @@ name: Sync train observations
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: '32 */6 * * *'
 permissions:
   contents: read
 concurrency:
-  group: railbet-observations
+  # All three workers share the same Supabase database.
+  group: railbet-database-workers
+  queue: max
   cancel-in-progress: false
 jobs:
   sync:
